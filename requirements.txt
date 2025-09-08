@@ -1,0 +1,8 @@
+baostock==0.8.9
+pymysql==1.1.0
+pandas==2.0.3
+numpy==1.24.3
+python-dateutil==2.8.2
+click==8.1.7
+tqdm==4.66.1
+sqlalchemy==2.0.23
