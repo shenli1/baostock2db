@@ -11,9 +11,12 @@ import time
 from datetime import datetime, date, timedelta
 from typing import List, Optional
 
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import Config
-from database.manager import DatabaseManager
-from batch_processor import BatchProcessor
+from database.manager_fixed import DatabaseManagerFixed as DatabaseManager
+from data_acquisition.batch_processor import BatchProcessor
 
 # 配置日志
 logging.basicConfig(

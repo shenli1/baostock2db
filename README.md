@@ -1,234 +1,193 @@
-# BaoStock2DB
+# 多因子量化投资策略系统
 
-一个基于BaoStock的股票数据获取和存储工具，支持将BaoStock的股票数据批量导入到MySQL数据库中。
+基于akshare和baostock的完整多因子量化投资策略系统，包含数据获取、数据加工、因子衍生、多因子策略四个核心模块。
+
+## 系统架构
+
+```
+多因子量化投资策略系统
+├── 数据获取 (Data Acquisition)
+├── 数据加工 (Data Processing) 
+├── 因子衍生 (Factor Derivation)
+└── 多因子策略 (Multi-Factor Strategy)
+```
 
 ## 功能特性
 
-- 🚀 **批量数据获取**: 支持批量获取历史数据和增量获取当日数据
-- 🔄 **自动去重**: 智能识别并防止数据重复
-- 📊 **多数据类型**: 支持K线数据、财务数据、业绩数据、行业分类、宏观经济数据等
-- 🎯 **成分股支持**: 支持按不同成分股类型（上证50、沪深300、中证500）批量更新
-- ⚡ **并发处理**: 支持多线程并发处理，提高数据获取效率
-- 🛡️ **错误处理**: 完善的错误处理和重试机制
-- 📝 **详细日志**: 完整的操作日志记录
+### 1. 数据获取模块
+- **股票基础信息**: 从akshare获取股票列表、行业分类等
+- **K线数据**: 从baostock获取前复权K线数据
+- **财务数据**: 获取财务报表、财务指标等
+- **指数数据**: 获取HS300等指数成分股数据
+- **批量处理**: 支持大规模数据的批量获取和存储
 
-## 安装要求
+### 2. 数据加工模块
+- **DWD层处理**: 将原始财务数据加工成截面数据
+- **基础因子表**: 构建包含技术指标和财务指标的基础因子表
+- **数据质量**: 自动处理缺失值、异常值和数据类型转换
+- **时间对齐**: 确保不同数据源的时间对齐
 
-- Python 3.7+
-- MySQL 5.7+
-- BaoStock 0.8.9+
+### 3. 因子衍生模块
+- **技术因子**: 动量、反转、波动率、成交量等技术指标
+- **基本面因子**: 估值、盈利、质量、成长等财务指标
+- **横截面因子**: 排名、标准化、行业中性化等处理
+- **因子存储**: 自动创建因子表并存储计算结果
 
-## 安装步骤
+### 4. 多因子策略模块
+- **因子组合**: 基于IC分析的多因子权重配置
+- **策略回测**: 完整的策略回测框架
+- **绩效分析**: 收益率、夏普比率、最大回撤等指标
+- **风险控制**: 支持多种风险控制机制
 
-1. 克隆项目
-```bash
-git clone <repository-url>
-cd akshare2db
+## 项目结构
+
+```
+akshare2db/
+├── data_acquisition/           # 数据获取模块
+│   ├── __init__.py
+│   ├── data_fetcher.py        # 数据获取器
+│   ├── batch_processor.py     # 批量处理器
+│   └── main.py               # 数据获取主程序
+├── data_processing/           # 数据加工模块
+│   ├── __init__.py
+│   ├── dwd_processor.py      # DWD层处理器
+│   └── base_factor_processor.py # 基础因子处理器
+├── factor_derivation/         # 因子衍生模块
+│   ├── __init__.py
+│   └── factor_generation_fixed.py # 因子生成器
+├── multi_factor_strategy/     # 多因子策略模块
+│   ├── __init__.py
+│   ├── multi_factor_strategy_fixed.py # 修复版策略
+│   └── optimized_multi_factor_strategy.py # 优化版策略
+├── database/                  # 数据库相关
+│   ├── manager_fixed.py      # 数据库管理器
+│   ├── schema.sql           # 原始表结构
+│   ├── dwd_schema.sql       # DWD层表结构
+│   └── base_factor_schema.sql # 基础因子表结构
+├── run_pipeline.py          # 完整流水线入口
+├── config.py                # 配置文件
+├── requirements.txt         # 依赖包
+└── README.md               # 项目说明
 ```
 
-2. 安装依赖
+## 安装依赖
+
 ```bash
 pip install -r requirements.txt
 ```
 
-3. 配置数据库
-确保MySQL服务运行在 `localhost:3306`，用户名和密码为 `root/root`，数据库名为 `baostock`。
-
-4. 初始化数据库
-```bash
-python main.py init
-```
-
 ## 使用方法
 
-### 命令行接口
+### 1. 配置数据库
 
-#### 1. 初始化数据库
-```bash
-python main.py init
-```
+修改 `config.py` 中的数据库连接信息：
 
-#### 2. 更新股票列表
-```bash
-# 更新所有股票
-python main.py update-stocks
-
-# 更新上证50股票
-python main.py update-stocks --index-type sz50
-
-# 更新沪深300股票
-python main.py update-stocks --index-type hs300
-
-# 更新中证500股票
-python main.py update-stocks --index-type zz500
-```
-
-#### 3. 更新K线数据
-```bash
-# 全量更新K线数据
-python main.py update-kline --index-type hs300 --start-date 2020-01-01 --end-date 2023-12-31
-
-# 增量更新K线数据
-python main.py update-kline --index-type hs300 --incremental
-
-# 更新不同频率的K线数据
-python main.py update-kline --index-type hs300 --frequency w  # 周线
-python main.py update-kline --index-type hs300 --frequency m  # 月线
-```
-
-#### 4. 更新财务数据
-```bash
-# 更新2023年第四季度财务数据
-python main.py update-financial --index-type hs300 --year 2023 --quarter 4
-
-# 只更新盈利能力数据
-python main.py update-financial --index-type hs300 --year 2023 --quarter 4 --data-types profit
-```
-
-#### 5. 更新业绩数据
-```bash
-# 更新业绩快报和预告数据
-python main.py update-performance --index-type hs300 --start-date 2023-01-01 --end-date 2023-12-31
-
-# 只更新业绩快报数据
-python main.py update-performance --index-type hs300 --data-types express
-```
-
-#### 6. 更新行业分类数据
-```bash
-python main.py update-industry --index-type hs300
-```
-
-#### 7. 更新宏观经济数据
-```bash
-# 更新所有宏观经济数据
-python main.py update-macro --start-date 2020-01-01 --end-date 2023-12-31
-
-# 只更新存款利率数据
-python main.py update-macro --data-types deposit_rate
-```
-
-#### 8. 更新交易日历
-```bash
-python main.py update-trade-dates --start-date 2020-01-01 --end-date 2023-12-31
-```
-
-#### 9. 更新复权因子数据
-```bash
-python main.py update-adjust-factor --index-type hs300 --start-date 2020-01-01 --end-date 2023-12-31
-```
-
-#### 10. 更新除权除息数据
-```bash
-python main.py update-dividend --index-type hs300 --year 2023
-```
-
-#### 11. 一键更新所有数据
-```bash
-# 更新所有数据
-python main.py update-all --index-type hs300
-
-# 只更新指定类型的数据
-python main.py update-all --index-type hs300 --data-types kline,financial,performance
-```
-
-#### 12. 查看数据库状态
-```bash
-python main.py status
-```
-
-### 程序化使用
-
-```python
-from batch_processor import BatchProcessor
-
-# 创建批量处理器
-with BatchProcessor() as processor:
-    # 获取股票列表
-    stock_codes = processor.process_stock_list('hs300')
-    
-    # 更新K线数据
-    stats = processor.process_kline_data(
-        stock_codes=stock_codes,
-        start_date='2023-01-01',
-        end_date='2023-12-31',
-        incremental=False
-    )
-    
-    print(f"更新了 {stats['total_records']} 条K线数据")
-```
-
-## 数据库表结构
-
-### 股票数据表
-- `stock_basic`: 股票基本信息
-- `stock_kline`: K线数据
-- `stock_profit`: 盈利能力数据
-- `stock_operation`: 营运能力数据
-- `stock_growth`: 成长能力数据
-- `stock_balance`: 偿债能力数据
-- `stock_cashflow`: 现金流量数据
-- `stock_dupont`: 杜邦指标数据
-- `stock_performance`: 业绩快报数据
-- `stock_forecast`: 业绩预告数据
-- `stock_industry`: 行业分类数据
-- `stock_adjust_factor`: 复权因子数据
-- `stock_dividend`: 除权除息数据
-
-### 宏观经济数据表
-- `macro_deposit_rate`: 存款利率数据
-- `macro_loan_rate`: 贷款利率数据
-- `macro_reserve_ratio`: 存款准备金率数据
-- `macro_money_supply`: 货币供应量数据
-
-### 其他数据表
-- `trade_dates`: 交易日历数据
-
-## 配置说明
-
-### 数据库配置
-在 `config.py` 中修改数据库连接配置：
 ```python
 DATABASE_CONFIG = {
     'host': 'localhost',
     'port': 3306,
-    'user': 'root',
-    'password': 'root',
-    'database': 'baostock',
+    'user': 'your_username',
+    'password': 'your_password',
+    'database': 'your_database',
     'charset': 'utf8mb4'
 }
 ```
 
-### 数据获取配置
-```python
-DATA_CONFIG = {
-    'batch_size': 100,  # 批量处理大小
-    'max_workers': 4,   # 最大并发数
-    'chunk_size': 1000, # 数据块大小
-    'default_start_date': '1990-01-01',  # 默认开始日期
-}
+### 2. 运行完整流水线
+
+```bash
+# 运行完整的多因子策略流水线
+python run_pipeline.py --full-pipeline --start-date 2020-06-01 --end-date 2020-12-31
+
+# 使用优化版策略
+python run_pipeline.py --full-pipeline --strategy-type optimized --rebalance-freq 10 --top-n 50
 ```
+
+### 3. 运行单个模块
+
+```bash
+# 只运行数据获取
+python run_pipeline.py --data-acquisition --start-date 2020-06-01 --end-date 2020-12-31
+
+# 只运行数据加工
+python run_pipeline.py --data-processing
+
+# 只运行因子衍生
+python run_pipeline.py --factor-derivation --start-date 2020-06-01 --end-date 2020-12-31
+
+# 只运行多因子策略
+python run_pipeline.py --multi-factor-strategy --start-date 2020-06-01 --end-date 2020-12-31
+```
+
+### 4. 单独运行各模块
+
+```bash
+# 数据获取模块
+cd data_acquisition
+python main.py update-all
+
+# 数据加工模块
+cd data_processing
+python dwd_processor.py
+python base_factor_processor.py
+
+# 因子衍生模块
+cd factor_derivation
+python factor_generation_fixed.py
+
+# 多因子策略模块
+cd multi_factor_strategy
+python optimized_multi_factor_strategy.py --start-date 2020-06-01 --end-date 2020-12-31
+```
+
+## 数据表结构
+
+### 原始数据表
+- `stock_basic`: 股票基础信息
+- `stock_kline`: K线数据
+- `stock_express`: 财务快报数据
+- `stock_balance`: 资产负债表数据
+- `stock_income`: 利润表数据
+- `stock_cashflow`: 现金流量表数据
+- `stock_operation`: 运营能力数据
+- `stock_growth`: 成长能力数据
+- `stock_profit`: 盈利能力数据
+- `stock_industry`: 行业分类数据
+- `index_stock`: 指数成分股数据
+
+### DWD层数据表
+- `dwd_stock_balance`: 截面化资产负债表数据
+- `dwd_stock_income`: 截面化利润表数据
+- `dwd_stock_cashflow`: 截面化现金流量表数据
+- `dwd_stock_operation`: 截面化运营能力数据
+- `dwd_stock_growth`: 截面化成长能力数据
+- `dwd_stock_profit`: 截面化盈利能力数据
+
+### 因子数据表
+- `dwd_stock_base_factor`: 基础因子表
+- `stock_factors_technical`: 技术因子表
+- `stock_factors_fundamental`: 基本面因子表
+- `stock_factors_cross_sectional`: 横截面因子表
+
+## 策略参数说明
+
+- `--start-date`: 回测开始日期
+- `--end-date`: 回测结束日期
+- `--rebalance-freq`: 调仓频率（交易日）
+- `--top-n`: 选股数量
+- `--min-score`: 最小因子得分阈值
+- `--strategy-type`: 策略类型（fixed/optimized）
 
 ## 注意事项
 
-1. **数据频率**: BaoStock的数据更新有时间限制，建议在数据更新后使用
-2. **并发控制**: 建议根据网络状况调整并发数，避免请求过于频繁
-3. **增量更新**: 使用增量更新模式可以避免重复获取已有数据
-4. **错误处理**: 程序会自动重试失败的请求，但建议定期检查日志
-5. **数据完整性**: 建议定期检查数据完整性，确保数据质量
-
-## 日志文件
-
-程序运行日志保存在 `baostock2db.log` 文件中，包含详细的执行信息和错误记录。
+1. 确保MySQL服务已启动
+2. 确保数据库用户有足够的权限
+3. 首次运行会创建所有数据表
+4. 数据获取需要网络连接
+5. 建议在非交易时间运行数据获取
+6. 因子计算需要足够的历史数据
+7. 策略回测结果仅供参考，不构成投资建议
 
 ## 许可证
 
 MIT License
-
-## 贡献
-
-欢迎提交Issue和Pull Request来改进这个项目。
-
-## 联系方式
-
-如有问题，请通过GitHub Issues联系。

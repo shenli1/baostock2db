@@ -12,6 +12,9 @@ from datetime import datetime, date, timedelta
 import time
 import re
 
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import Config
 
 class BaoStockDataFetcher:
@@ -30,12 +33,13 @@ class BaoStockDataFetcher:
             if result.error_code == '0':
                 self.is_logged_in = True
                 self.logger.info("BaoStock登录成功")
+                return True
             else:
                 self.logger.error(f"BaoStock登录失败: {result.error_msg}")
-                raise Exception(f"登录失败: {result.error_msg}")
+                return False
         except Exception as e:
             self.logger.error(f"BaoStock登录异常: {str(e)}")
-            raise
+            return False
     
     def _logout(self):
         """登出BaoStock"""

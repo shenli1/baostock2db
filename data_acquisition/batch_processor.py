@@ -11,8 +11,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
 import time
 
-from data_fetcher import BaoStockDataFetcher
-from database.manager import DatabaseManager
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from data_acquisition.data_fetcher import BaoStockDataFetcher
+from database.manager_fixed import DatabaseManagerFixed as DatabaseManager
 from config import Config
 
 class BatchProcessor:
