@@ -215,7 +215,7 @@ class FactorGeneratorFixed:
         logger.info(f"横截面因子生成完成: {len(result_df)} 条记录")
         return result_df
     
-    def save_factors_to_database_safe(self, df: pd.DataFrame, table_name: str = 'stock_factors_fixed'):
+    def save_factors_to_database_safe(self, df: pd.DataFrame, table_name: str = 'dws_stock_factors'):
         """
         安全保存因子数据到数据库
         
