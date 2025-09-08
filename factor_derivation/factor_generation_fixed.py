@@ -288,7 +288,7 @@ def main():
     parser = argparse.ArgumentParser(description='修复版因子生成器')
     parser.add_argument('--start-date', default='2020-06-01', help='开始日期')
     parser.add_argument('--end-date', help='结束日期')
-    parser.add_argument('--table-name', default='stock_factors_fixed', help='因子表名')
+    parser.add_argument('--table-name', default='dws_stock_factors', help='因子表名')
     
     args = parser.parse_args()
     

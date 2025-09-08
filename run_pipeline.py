@@ -83,15 +83,23 @@ class MultiFactorPipeline:
         self.logger.info("=== 开始因子衍生 ===")
         
         try:
+            # 获取基础因子数据
+            self.logger.info("获取基础因子数据")
+            df = self.factor_generator.get_base_factor_data(start_date, end_date)
+            
             # 生成各种因子
             self.logger.info("生成技术因子")
-            self.factor_generator.generate_technical_factors(start_date, end_date)
+            df = self.factor_generator.generate_technical_factors_optimized(df)
             
             self.logger.info("生成基本面因子")
-            self.factor_generator.generate_fundamental_factors(start_date, end_date)
+            df = self.factor_generator.generate_fundamental_factors_optimized(df)
             
             self.logger.info("生成横截面因子")
-            self.factor_generator.generate_cross_sectional_factors(start_date, end_date)
+            df = self.factor_generator.generate_cross_sectional_factors_optimized(df)
+            
+            # 保存因子数据
+            self.logger.info("保存因子数据到数据库")
+            self.factor_generator.save_factors_to_database_safe(df)
             
             self.logger.info("因子衍生完成")
             
