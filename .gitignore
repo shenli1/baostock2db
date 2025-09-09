@@ -132,3 +132,6 @@ tmp/
 *.tmp
 *.temp
 base_factor_data_quality_report.html
+*.md
+*.png
+*.html

@@ -17,6 +17,7 @@ from data_processing.dwd_processor import DWDProcessor
 from data_processing.base_factor_processor import BaseFactorProcessor
 from factor_derivation.factor_generation_fixed import FactorGeneratorFixed
 from factor_derivation.factor_preprocessor import FactorPreprocessor
+from factor_analysis.simple_factor_analyzer import SimpleFactorAnalyzer
 from multi_factor_strategy.multi_factor_strategy_fixed import MultiFactorStrategyFixed
 from multi_factor_strategy.optimized_multi_factor_strategy import OptimizedMultiFactorStrategy
 from database.manager_fixed import DatabaseManagerFixed
@@ -34,6 +35,7 @@ class MultiFactorPipeline:
         self.base_factor_processor = BaseFactorProcessor()
         self.factor_generator = FactorGeneratorFixed()
         self.factor_preprocessor = FactorPreprocessor()
+        self.single_factor_analyzer = SimpleFactorAnalyzer()
         
         # 配置日志
         logging.basicConfig(
@@ -163,6 +165,35 @@ class MultiFactorPipeline:
             self.logger.error(f"多因子策略失败: {str(e)}")
             raise
     
+    def run_single_factor_analysis(self, start_date: str, end_date: str, 
+                                 table_name: str = 'dws_stock_factors_preprocessed',
+                                 quantiles: int = 5, max_factors: int = None,
+                                 save_plots: bool = True, output_dir: str = "factor_analysis_plots"):
+        """运行单因子分析"""
+        self.logger.info("=== 开始单因子分析 ===")
+        
+        try:
+            # 运行单因子分析
+            results = self.single_factor_analyzer.analyze_all_factors(
+                start_date=start_date,
+                end_date=end_date,
+                table_name=table_name,
+                quantiles=quantiles,
+                max_factors=max_factors,
+                save_plots=save_plots,
+                output_dir=output_dir
+            )
+            
+            # 生成分析报告
+            report = self.single_factor_analyzer.generate_analysis_report(results)
+            
+            self.logger.info("单因子分析完成")
+            return results
+            
+        except Exception as e:
+            self.logger.error(f"单因子分析失败: {str(e)}")
+            raise
+    
     def run_full_pipeline(self, start_date: str, end_date: str, 
                          strategy_type: str = 'optimized', **kwargs):
         """运行完整流水线"""
@@ -198,6 +229,7 @@ class MultiFactorPipeline:
         self.data_fetcher.close()
         self.factor_generator.close()
         self.factor_preprocessor.close()
+        self.single_factor_analyzer.close()
 
 
 def main():
@@ -220,8 +252,16 @@ def main():
     parser.add_argument('--data-processing', action='store_true', help='只运行数据加工')
     parser.add_argument('--factor-derivation', action='store_true', help='只运行因子衍生')
     parser.add_argument('--factor-preprocessing', action='store_true', help='只运行因子预处理')
+    parser.add_argument('--single-factor-analysis', action='store_true', help='只运行单因子分析')
     parser.add_argument('--multi-factor-strategy', action='store_true', help='只运行多因子策略')
     parser.add_argument('--full-pipeline', action='store_true', help='运行完整流水线')
+    
+    # 单因子分析参数
+    parser.add_argument('--table-name', default='dws_stock_factors_preprocessed', help='因子表名')
+    parser.add_argument('--quantiles', type=int, default=5, help='分层数量')
+    parser.add_argument('--max-factors', type=int, help='最大分析因子数量')
+    parser.add_argument('--save-plots', action='store_true', help='保存alphalens图表')
+    parser.add_argument('--output-dir', default='factor_analysis_plots', help='图表输出目录')
     
     args = parser.parse_args()
     
@@ -230,7 +270,8 @@ def main():
     
     try:
         if args.full_pipeline or not any([args.data_acquisition, args.data_processing, 
-                                        args.factor_derivation, args.factor_preprocessing, args.multi_factor_strategy]):
+                                        args.factor_derivation, args.factor_preprocessing, 
+                                        args.single_factor_analysis, args.multi_factor_strategy]):
             # 运行完整流水线
             pipeline.run_full_pipeline(
                 start_date=args.start_date,
@@ -253,6 +294,13 @@ def main():
             
             if args.factor_preprocessing:
                 pipeline.run_factor_preprocessing(args.start_date, args.end_date)
+            
+            if args.single_factor_analysis:
+                pipeline.run_single_factor_analysis(
+                    args.start_date, args.end_date, args.table_name,
+                    quantiles=args.quantiles, max_factors=args.max_factors,
+                    save_plots=args.save_plots, output_dir=args.output_dir
+                )
             
             if args.multi_factor_strategy:
                 pipeline.run_multi_factor_strategy(
