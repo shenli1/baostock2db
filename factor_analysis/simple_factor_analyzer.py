@@ -119,27 +119,33 @@ class SimpleFactorAnalyzer:
     
     def calculate_future_returns(self, df: pd.DataFrame, periods: List[int] = [1, 5, 10]) -> pd.DataFrame:
         """
-        计算未来N天收益率
+        计算未来N天收益率排名
         
         Args:
             df: 包含价格数据的DataFrame
             periods: 未来收益率计算周期列表
             
         Returns:
-            包含未来收益率的DataFrame
+            包含未来收益率排名的DataFrame
         """
         df_returns = df.copy()
         
         # 按股票代码分组计算未来收益率
         for period in periods:
             # 计算未来N天的收益率
-            df_returns[f'future_return_{period}d'] = (
+            future_returns = (
                 df_returns.groupby('code')['close']
                 .pct_change(periods=period)
                 .shift(-period)  # 向前移动，得到未来收益率
             )
+            
+            # 对每日收益率进行排名（0-1之间，1表示最高收益）
+            df_returns[f'future_return_{period}d'] = (
+                df_returns.groupby('date')[future_returns.name]
+                .rank(pct=True, method='dense')
+            )
         
-        logger.info(f"计算未来收益率完成，周期: {periods}")
+        logger.info(f"计算未来收益率排名完成，周期: {periods}")
         return df_returns
 
     def calculate_ic(self, factor_values: pd.Series, returns: pd.Series) -> float:
@@ -242,6 +248,104 @@ class SimpleFactorAnalyzer:
             logger.warning(f"整体分层收益计算失败: {str(e)}")
             return pd.DataFrame()
     
+    def calculate_detailed_quantile_analysis(self, df: pd.DataFrame, factor_name: str,
+                                           quantiles: int = 5) -> Dict[str, Any]:
+        """
+        计算详细的分组对比分析
+        
+        Args:
+            df: 包含因子和收益数据的DataFrame
+            factor_name: 因子名称
+            quantiles: 分层数量
+            
+        Returns:
+            详细分组分析结果
+        """
+        try:
+            # 按因子值排序并分层
+            df_sorted = df.sort_values(factor_name)
+            df_sorted['quantile'] = pd.qcut(range(len(df_sorted)), 
+                                          quantiles, labels=False, duplicates='drop')
+            
+            # 计算各分层的详细统计
+            quantile_analysis = []
+            
+            for q in range(quantiles):
+                q_data = df_sorted[df_sorted['quantile'] == q]
+                if len(q_data) == 0:
+                    continue
+                    
+                # 基础统计
+                stats = {
+                    'quantile': q + 1,
+                    'quantile_label': f'Q{q+1}',
+                    'count': len(q_data),
+                    'factor_mean': q_data[factor_name].mean(),
+                    'factor_std': q_data[factor_name].std(),
+                    'factor_min': q_data[factor_name].min(),
+                    'factor_max': q_data[factor_name].max(),
+                    'return_mean': q_data['future_return_1d'].mean(),
+                    'return_std': q_data['future_return_1d'].std(),
+                    'return_min': q_data['future_return_1d'].min(),
+                    'return_max': q_data['future_return_1d'].max(),
+                    'return_median': q_data['future_return_1d'].median(),
+                    'win_rate': (q_data['future_return_1d'] > 0.5).mean(),  # 排名>0.5的比例
+                    'sharpe_ratio': q_data['future_return_1d'].mean() / q_data['future_return_1d'].std() if q_data['future_return_1d'].std() > 0 else 0
+                }
+                
+                # 计算相对表现（相对于市场平均）
+                market_avg = df_sorted['future_return_1d'].mean()
+                stats['excess_return'] = stats['return_mean'] - market_avg
+                stats['relative_performance'] = stats['return_mean'] / market_avg if market_avg != 0 else 1
+                
+                quantile_analysis.append(stats)
+            
+            # 计算分层间的对比指标
+            if len(quantile_analysis) >= 2:
+                top_quantile = quantile_analysis[-1]  # 最高分位数
+                bottom_quantile = quantile_analysis[0]  # 最低分位数
+                
+                # 多空收益差
+                long_short_spread = top_quantile['return_mean'] - bottom_quantile['return_mean']
+                
+                # 信息比率（基于分层收益差）
+                spread_std = np.std([q['return_mean'] for q in quantile_analysis])
+                information_ratio = long_short_spread / spread_std if spread_std > 0 else 0
+                
+                # 单调性检验（Spearman相关系数）
+                quantile_ranks = [q['quantile'] for q in quantile_analysis]
+                return_means = [q['return_mean'] for q in quantile_analysis]
+                monotonicity = np.corrcoef(quantile_ranks, return_means)[0, 1] if len(quantile_ranks) > 1 else 0
+                
+                return {
+                    'quantile_analysis': quantile_analysis,
+                    'long_short_spread': long_short_spread,
+                    'information_ratio': information_ratio,
+                    'monotonicity': monotonicity,
+                    'top_quantile': top_quantile,
+                    'bottom_quantile': bottom_quantile
+                }
+            else:
+                return {
+                    'quantile_analysis': quantile_analysis,
+                    'long_short_spread': 0,
+                    'information_ratio': 0,
+                    'monotonicity': 0,
+                    'top_quantile': None,
+                    'bottom_quantile': None
+                }
+                
+        except Exception as e:
+            logger.warning(f"详细分组分析计算失败: {str(e)}")
+            return {
+                'quantile_analysis': [],
+                'long_short_spread': 0,
+                'information_ratio': 0,
+                'monotonicity': 0,
+                'top_quantile': None,
+                'bottom_quantile': None
+            }
+    
     def analyze_single_factor(self, df: pd.DataFrame, factor_name: str, 
                             quantiles: int = 5, save_plots: bool = True, 
                             output_dir: str = "factor_analysis_plots") -> Dict[str, Any]:
@@ -292,6 +396,9 @@ class SimpleFactorAnalyzer:
                 bottom_return = quantile_returns.iloc[0]['mean']
                 spread = top_return - bottom_return
             
+            # 计算详细分组分析
+            detailed_quantile_analysis = self.calculate_detailed_quantile_analysis(df_with_returns, factor_name, quantiles)
+            
             # 因子分布统计
             factor_values = df[factor_name].dropna()
             factor_mean = factor_values.mean()
@@ -314,7 +421,8 @@ class SimpleFactorAnalyzer:
                 'factor_skew': factor_skew,
                 'factor_kurt': factor_kurt,
                 'data_points': len(factor_values),
-                'quantile_returns': quantile_returns
+                'quantile_returns': quantile_returns,
+                'detailed_quantile_analysis': detailed_quantile_analysis
             }
             
             # 创建图表
@@ -837,12 +945,23 @@ class SimpleFactorAnalyzer:
             # 保存汇总结果
             self.save_analysis_summary(summary_df, table_name, start_date, end_date)
             
+            # 创建整合的HTML报告
+            effective_factors = [row['factor_name'] for _, row in summary_df.iterrows() 
+                               if not np.isnan(row['ic_ir']) and row['ic_ir'] > 0.05]
+            if effective_factors:
+                self.create_consolidated_html_report(
+                    effective_factors, all_results, summary_df, 
+                    start_date, end_date, table_name, output_dir
+                )
+            
             logger.info(f"因子分析完成，共分析 {len(summary_stats)} 个因子")
+            logger.info(f"有效因子数量: {len(effective_factors)}")
             logger.info(f"IC信息比率排名前5: {summary_df.head()['factor_name'].tolist()}")
             
             return {
                 'summary': summary_df,
                 'detailed_results': all_results,
+                'effective_factors': effective_factors,
                 'total_factors': len(factor_columns),
                 'analyzed_factors': len(summary_stats),
                 'failed_factors': len(factor_columns) - len(summary_stats)
@@ -906,6 +1025,296 @@ class SimpleFactorAnalyzer:
             
         except Exception as e:
             logger.error(f"创建分析汇总表失败: {str(e)}")
+            return None
+
+    def create_consolidated_html_report(self, effective_factors: List[str], all_results: Dict[str, Any], 
+                                      summary_df: pd.DataFrame, start_date: str, end_date: str, 
+                                      table_name: str, output_dir: str = "factor_analysis_plots") -> str:
+        """
+        创建整合的有效因子分析HTML报告
+        
+        Args:
+            effective_factors: 有效因子列表
+            all_results: 所有因子分析结果
+            summary_df: 汇总统计DataFrame
+            start_date: 开始日期
+            end_date: 结束日期
+            table_name: 表名
+            output_dir: 输出目录
+            
+        Returns:
+            HTML文件路径
+        """
+        try:
+            # 创建输出目录
+            if not os.path.exists(output_dir):
+                os.makedirs(output_dir)
+            
+            # 生成HTML文件路径
+            html_path = os.path.join(output_dir, f"{table_name}_effective_factors_analysis.html")
+            
+            # 创建HTML报告
+            html_content = f"""
+            <!DOCTYPE html>
+            <html lang="zh-CN">
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>有效因子分析报告 - {table_name}</title>
+                <style>
+                    body {{ font-family: Arial, sans-serif; margin: 20px; background-color: #f5f5f5; }}
+                    .container {{ max-width: 1400px; margin: 0 auto; background-color: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
+                    h1 {{ color: #2c3e50; border-bottom: 3px solid #3498db; padding-bottom: 10px; }}
+                    h2 {{ color: #34495e; margin-top: 30px; }}
+                    .stats-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin: 20px 0; }}
+                    .stat-card {{ background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 8px; text-align: center; }}
+                    .stat-value {{ font-size: 24px; font-weight: bold; margin-bottom: 5px; }}
+                    .stat-label {{ font-size: 14px; opacity: 0.9; }}
+                    table {{ width: 100%; border-collapse: collapse; margin: 20px 0; }}
+                    th, td {{ padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }}
+                    th {{ background-color: #f8f9fa; font-weight: bold; }}
+                    .positive {{ color: #27ae60; font-weight: bold; }}
+                    .negative {{ color: #e74c3c; font-weight: bold; }}
+                    .neutral {{ color: #95a5a6; }}
+                    .factor-section {{ margin: 30px 0; padding: 20px; border: 1px solid #ddd; border-radius: 8px; background-color: #fafafa; }}
+                    .factor-header {{ background: linear-gradient(135deg, #3498db 0%, #2980b9 100%); color: white; padding: 15px; margin: -20px -20px 20px -20px; border-radius: 8px 8px 0 0; }}
+                    .info-box {{ background-color: #e8f4fd; border-left: 4px solid #3498db; padding: 15px; margin: 20px 0; }}
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <h1>📊 有效因子分析报告</h1>
+                    
+                    <div class="info-box">
+                        <h3>📋 分析概览</h3>
+                        <p><strong>数据表:</strong> {table_name}</p>
+                        <p><strong>分析期间:</strong> {start_date} 至 {end_date}</p>
+                        <p><strong>分析时间:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+                        <p><strong>有效因子数量:</strong> {len(effective_factors)}</p>
+                    </div>
+                    
+                    <h2>📈 有效因子排名</h2>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>排名</th>
+                                <th>因子名称</th>
+                                <th>IC均值</th>
+                                <th>IC标准差</th>
+                                <th>IC信息比率</th>
+                                <th>分层收益差</th>
+                                <th>数据点数</th>
+                                <th>评级</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+            """
+            
+            # 添加有效因子排名表格
+            for i, factor_name in enumerate(effective_factors, 1):
+                if factor_name in all_results and 'error' not in all_results[factor_name]:
+                    result = all_results[factor_name]
+                    ic_ir = result.get('ic_ir', 0)
+                    
+                    # 评级
+                    if ic_ir > 0.2:
+                        rating = "优秀"
+                        rating_class = "positive"
+                    elif ic_ir > 0.1:
+                        rating = "良好"
+                        rating_class = "positive"
+                    elif ic_ir > 0.05:
+                        rating = "一般"
+                        rating_class = "neutral"
+                    else:
+                        rating = "较差"
+                        rating_class = "negative"
+                    
+                    html_content += f"""
+                            <tr>
+                                <td>{i}</td>
+                                <td><strong>{factor_name}</strong></td>
+                                <td class="{'positive' if result.get('ic_mean', 0) > 0 else 'negative' if result.get('ic_mean', 0) < 0 else 'neutral'}">{result.get('ic_mean', 0):.4f}</td>
+                                <td>{result.get('ic_std', 0):.4f}</td>
+                                <td class="{'positive' if ic_ir > 0 else 'negative' if ic_ir < 0 else 'neutral'}">{ic_ir:.4f}</td>
+                                <td class="{'positive' if result.get('spread', 0) > 0 else 'negative' if result.get('spread', 0) < 0 else 'neutral'}">{result.get('spread', 0):.4f}</td>
+                                <td>{result.get('data_points', 0):,}</td>
+                                <td class="{rating_class}">{rating}</td>
+                            </tr>
+                    """
+            
+            html_content += """
+                        </tbody>
+                    </table>
+                    
+                    <h2>📊 有效因子详细分析</h2>
+            """
+            
+            # 为每个有效因子创建详细分析部分
+            for factor_name in effective_factors:
+                if factor_name in all_results and 'error' not in all_results[factor_name]:
+                    result = all_results[factor_name]
+                    
+                    html_content += f"""
+                    <div class="factor-section">
+                        <div class="factor-header">
+                            <h3>📈 {factor_name}</h3>
+                        </div>
+                        
+                        <div class="stats-grid">
+                            <div class="stat-card">
+                                <div class="stat-value">{result.get('ic_mean', 0):.4f}</div>
+                                <div class="stat-label">IC均值</div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-value">{result.get('ic_std', 0):.4f}</div>
+                                <div class="stat-label">IC标准差</div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-value">{result.get('ic_ir', 0):.4f}</div>
+                                <div class="stat-label">IC信息比率</div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-value">{result.get('data_points', 0):,}</div>
+                                <div class="stat-label">数据点数</div>
+                            </div>
+                        </div>
+                        
+                        <h4>📊 分层收益分析</h4>
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>指标</th>
+                                    <th>数值</th>
+                                    <th>说明</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td>最高分位数收益</td>
+                                    <td class="{'positive' if result.get('top_quantile_return', 0) > 0 else 'negative' if result.get('top_quantile_return', 0) < 0 else 'neutral'}">{result.get('top_quantile_return', 0):.4f}</td>
+                                    <td>因子值最高分位数的平均收益</td>
+                                </tr>
+                                <tr>
+                                    <td>最低分位数收益</td>
+                                    <td class="{'positive' if result.get('bottom_quantile_return', 0) > 0 else 'negative' if result.get('bottom_quantile_return', 0) < 0 else 'neutral'}">{result.get('bottom_quantile_return', 0):.4f}</td>
+                                    <td>因子值最低分位数的平均收益</td>
+                                </tr>
+                                <tr>
+                                    <td>分层收益差</td>
+                                    <td class="{'positive' if result.get('spread', 0) > 0 else 'negative' if result.get('spread', 0) < 0 else 'neutral'}">{result.get('spread', 0):.4f}</td>
+                                    <td>最高分位数收益 - 最低分位数收益</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                        
+                        <h4>📈 详细分组对比分析</h4>
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>分位数</th>
+                                    <th>样本数</th>
+                                    <th>因子均值</th>
+                                    <th>收益均值</th>
+                                    <th>收益标准差</th>
+                                    <th>胜率</th>
+                                    <th>夏普比率</th>
+                                    <th>超额收益</th>
+                                    <th>相对表现</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+            """
+            
+            # 添加详细分组分析表格
+            detailed_analysis = result.get('detailed_quantile_analysis', {})
+            quantile_analysis = detailed_analysis.get('quantile_analysis', [])
+            
+            for q_analysis in quantile_analysis:
+                html_content += f"""
+                                <tr>
+                                    <td><strong>{q_analysis['quantile_label']}</strong></td>
+                                    <td>{q_analysis['count']:,}</td>
+                                    <td>{q_analysis['factor_mean']:.4f}</td>
+                                    <td class="{'positive' if q_analysis['return_mean'] > 0.5 else 'negative' if q_analysis['return_mean'] < 0.5 else 'neutral'}">{q_analysis['return_mean']:.4f}</td>
+                                    <td>{q_analysis['return_std']:.4f}</td>
+                                    <td class="{'positive' if q_analysis['win_rate'] > 0.5 else 'negative' if q_analysis['win_rate'] < 0.5 else 'neutral'}">{q_analysis['win_rate']:.2%}</td>
+                                    <td class="{'positive' if q_analysis['sharpe_ratio'] > 0 else 'negative' if q_analysis['sharpe_ratio'] < 0 else 'neutral'}">{q_analysis['sharpe_ratio']:.4f}</td>
+                                    <td class="{'positive' if q_analysis['excess_return'] > 0 else 'negative' if q_analysis['excess_return'] < 0 else 'neutral'}">{q_analysis['excess_return']:.4f}</td>
+                                    <td class="{'positive' if q_analysis['relative_performance'] > 1 else 'negative' if q_analysis['relative_performance'] < 1 else 'neutral'}">{q_analysis['relative_performance']:.4f}</td>
+                                </tr>
+                """
+            
+            html_content += """
+                            </tbody>
+                        </table>
+                        
+                        <h4>📊 分组分析总结</h4>
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>指标</th>
+                                    <th>数值</th>
+                                    <th>说明</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+            """
+            
+            # 添加分组分析总结
+            if detailed_analysis:
+                html_content += f"""
+                                <tr>
+                                    <td>多空收益差</td>
+                                    <td class="{'positive' if detailed_analysis.get('long_short_spread', 0) > 0 else 'negative' if detailed_analysis.get('long_short_spread', 0) < 0 else 'neutral'}">{detailed_analysis.get('long_short_spread', 0):.4f}</td>
+                                    <td>最高分位数与最低分位数收益差</td>
+                                </tr>
+                                <tr>
+                                    <td>信息比率</td>
+                                    <td class="{'positive' if detailed_analysis.get('information_ratio', 0) > 0 else 'negative' if detailed_analysis.get('information_ratio', 0) < 0 else 'neutral'}">{detailed_analysis.get('information_ratio', 0):.4f}</td>
+                                    <td>基于分层收益差的信息比率</td>
+                                </tr>
+                                <tr>
+                                    <td>单调性</td>
+                                    <td class="{'positive' if detailed_analysis.get('monotonicity', 0) > 0.5 else 'negative' if detailed_analysis.get('monotonicity', 0) < -0.5 else 'neutral'}">{detailed_analysis.get('monotonicity', 0):.4f}</td>
+                                    <td>分位数与收益的相关系数（>0.5为强单调性）</td>
+                                </tr>
+                """
+            
+            html_content += """
+                            </tbody>
+                        </table>
+                    </div>
+                    """
+            
+            html_content += f"""
+                    <div class="info-box">
+                        <h4>📝 报告说明</h4>
+                        <p>本报告基于自定义因子分析框架生成，包含所有有效因子的完整分析结果。</p>
+                        <p><strong>有效因子标准:</strong> IC信息比率 > 0.05</p>
+                        <p><strong>评级标准:</strong></p>
+                        <ul>
+                            <li>优秀: IC信息比率 > 0.2</li>
+                            <li>良好: 0.1 < IC信息比率 ≤ 0.2</li>
+                            <li>一般: 0.05 < IC信息比率 ≤ 0.1</li>
+                            <li>较差: IC信息比率 ≤ 0.05</li>
+                        </ul>
+                        <p><strong>收益率计算:</strong> 使用股票收益率的日排名（0-1之间，1表示最高收益）</p>
+                    </div>
+                </div>
+            </body>
+            </html>
+            """
+            
+            # 保存HTML文件
+            with open(html_path, 'w', encoding='utf-8') as f:
+                f.write(html_content)
+            
+            logger.info(f"创建整合HTML分析报告: {html_path}")
+            return html_path
+            
+        except Exception as e:
+            logger.error(f"创建整合HTML报告失败: {str(e)}")
             return None
 
     def save_analysis_summary(self, summary_df: pd.DataFrame, table_name: str, 

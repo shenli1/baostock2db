@@ -130,27 +130,33 @@ class SingleFactorAnalyzer:
     
     def calculate_future_returns(self, df: pd.DataFrame, periods: List[int] = [1, 5, 10]) -> pd.DataFrame:
         """
-        计算未来N天收益率
+        计算未来N天收益率排名
         
         Args:
             df: 包含价格数据的DataFrame
             periods: 未来收益率计算周期列表
             
         Returns:
-            包含未来收益率的DataFrame
+            包含未来收益率排名的DataFrame
         """
         df_returns = df.copy()
         
         # 按股票代码分组计算未来收益率
         for period in periods:
             # 计算未来N天的收益率
-            df_returns[f'future_return_{period}d'] = (
+            future_returns = (
                 df_returns.groupby('code')['close']
                 .pct_change(periods=period)
                 .shift(-period)  # 向前移动，得到未来收益率
             )
+            
+            # 对每日收益率进行排名（0-1之间，1表示最高收益）
+            df_returns[f'future_return_{period}d'] = (
+                df_returns.groupby('date')[future_returns.name]
+                .rank(pct=True, method='dense')
+            )
         
-        logger.info(f"计算未来收益率完成，周期: {periods}")
+        logger.info(f"计算未来收益率排名完成，周期: {periods}")
         return df_returns
     
     def prepare_alphalens_data(self, df: pd.DataFrame, factor_name: str, 
@@ -184,6 +190,12 @@ class SingleFactorAnalyzer:
         common_index = factor_data.index.intersection(prices.index)
         factor_data = factor_data.loc[common_index]
         prices = prices.loc[common_index]
+        
+        # 确保索引没有时区信息
+        if hasattr(factor_data.index, 'tz') and factor_data.index.tz is not None:
+            factor_data.index = factor_data.index.tz_localize(None)
+        if hasattr(prices.index, 'tz') and prices.index.tz is not None:
+            prices.index = prices.index.tz_localize(None)
         
         logger.info(f"准备因子 {factor_name} 的alphalens数据: {len(factor_data)} 个数据点")
         return factor_data, prices
@@ -500,6 +512,25 @@ class SingleFactorAnalyzer:
             if hasattr(prices.index, 'tz') and prices.index.tz is not None:
                 prices.index = prices.index.tz_localize(None)
             
+            # 确保MultiIndex的每个级别都没有时区信息
+            if isinstance(factor_data.index, pd.MultiIndex):
+                new_levels = []
+                for level in factor_data.index.levels:
+                    if hasattr(level, 'tz') and level.tz is not None:
+                        new_levels.append(level.tz_localize(None))
+                    else:
+                        new_levels.append(level)
+                factor_data.index = factor_data.index.set_levels(new_levels)
+            
+            if isinstance(prices.index, pd.MultiIndex):
+                new_levels = []
+                for level in prices.index.levels:
+                    if hasattr(level, 'tz') and level.tz is not None:
+                        new_levels.append(level.tz_localize(None))
+                    else:
+                        new_levels.append(level)
+                prices.index = prices.index.set_levels(new_levels)
+            
             # 创建alphalens数据
             factor_data_clean, forward_returns = alphalens.utils.get_clean_factor_and_forward_returns(
                 factor_data, prices, quantiles=quantiles, periods=(1, 5, 10)
@@ -633,6 +664,7 @@ class SingleFactorAnalyzer:
         
         all_results = {}
         summary_stats = []
+        effective_factors = []
         
         for i, factor_name in enumerate(factor_columns):
             logger.info(f"分析因子 {i+1}/{len(factor_columns)}: {factor_name}")
@@ -645,8 +677,8 @@ class SingleFactorAnalyzer:
                     logger.warning(f"因子 {factor_name} 数据点太少({len(factor_data)})，跳过")
                     continue
                 
-                # 分析因子
-                result = self.analyze_single_factor(factor_name, factor_data, prices, quantiles, save_plots, output_dir)
+                # 分析因子（不保存图表）
+                result = self.analyze_single_factor(factor_name, factor_data, prices, quantiles, False, output_dir)
                 all_results[factor_name] = result
                 
                 # 添加到汇总统计
@@ -659,6 +691,10 @@ class SingleFactorAnalyzer:
                         'spread': result['spread'],
                         'data_points': result['data_points']
                     })
+                    
+                    # 判断是否为有效因子（IC信息比率 > 0.05）
+                    if not np.isnan(result['ic_ir']) and result['ic_ir'] > 0.05:
+                        effective_factors.append(factor_name)
                 
             except Exception as e:
                 logger.error(f"分析因子 {factor_name} 时出错: {str(e)}")
@@ -675,12 +711,21 @@ class SingleFactorAnalyzer:
             # 保存汇总结果
             self.save_analysis_summary(summary_df, table_name, start_date, end_date)
             
+            # 创建整合的HTML报告
+            if effective_factors:
+                self.create_consolidated_html_report(
+                    effective_factors, all_results, summary_df, 
+                    start_date, end_date, table_name, output_dir
+                )
+            
             logger.info(f"因子分析完成，共分析 {len(summary_stats)} 个因子")
-            logger.info(f"IC均值排名前5: {summary_df.head()['factor_name'].tolist()}")
+            logger.info(f"有效因子数量: {len(effective_factors)}")
+            logger.info(f"IC信息比率排名前5: {summary_df.head()['factor_name'].tolist()}")
             
             return {
                 'summary': summary_df,
                 'detailed_results': all_results,
+                'effective_factors': effective_factors,
                 'total_factors': len(factor_columns),
                 'analyzed_factors': len(summary_stats),
                 'failed_factors': len(factor_columns) - len(summary_stats)
@@ -690,11 +735,224 @@ class SingleFactorAnalyzer:
             return {
                 'summary': pd.DataFrame(),
                 'detailed_results': all_results,
+                'effective_factors': [],
                 'total_factors': len(factor_columns),
                 'analyzed_factors': 0,
                 'failed_factors': len(factor_columns)
             }
     
+    def create_consolidated_html_report(self, effective_factors: List[str], all_results: Dict[str, Any], 
+                                      summary_df: pd.DataFrame, start_date: str, end_date: str, 
+                                      table_name: str, output_dir: str = "factor_analysis_plots") -> str:
+        """
+        创建整合的有效因子分析HTML报告
+        
+        Args:
+            effective_factors: 有效因子列表
+            all_results: 所有因子分析结果
+            summary_df: 汇总统计DataFrame
+            start_date: 开始日期
+            end_date: 结束日期
+            table_name: 表名
+            output_dir: 输出目录
+            
+        Returns:
+            HTML文件路径
+        """
+        try:
+            # 创建输出目录
+            if not os.path.exists(output_dir):
+                os.makedirs(output_dir)
+            
+            # 生成HTML文件路径
+            html_path = os.path.join(output_dir, f"{table_name}_effective_factors_analysis.html")
+            
+            # 创建HTML报告
+            html_content = f"""
+            <!DOCTYPE html>
+            <html lang="zh-CN">
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>有效因子分析报告 - {table_name}</title>
+                <style>
+                    body {{ font-family: Arial, sans-serif; margin: 20px; background-color: #f5f5f5; }}
+                    .container {{ max-width: 1400px; margin: 0 auto; background-color: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
+                    h1 {{ color: #2c3e50; border-bottom: 3px solid #3498db; padding-bottom: 10px; }}
+                    h2 {{ color: #34495e; margin-top: 30px; }}
+                    .stats-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin: 20px 0; }}
+                    .stat-card {{ background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 8px; text-align: center; }}
+                    .stat-value {{ font-size: 24px; font-weight: bold; margin-bottom: 5px; }}
+                    .stat-label {{ font-size: 14px; opacity: 0.9; }}
+                    table {{ width: 100%; border-collapse: collapse; margin: 20px 0; }}
+                    th, td {{ padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }}
+                    th {{ background-color: #f8f9fa; font-weight: bold; }}
+                    .positive {{ color: #27ae60; font-weight: bold; }}
+                    .negative {{ color: #e74c3c; font-weight: bold; }}
+                    .neutral {{ color: #95a5a6; }}
+                    .factor-section {{ margin: 30px 0; padding: 20px; border: 1px solid #ddd; border-radius: 8px; background-color: #fafafa; }}
+                    .factor-header {{ background: linear-gradient(135deg, #3498db 0%, #2980b9 100%); color: white; padding: 15px; margin: -20px -20px 20px -20px; border-radius: 8px 8px 0 0; }}
+                    .info-box {{ background-color: #e8f4fd; border-left: 4px solid #3498db; padding: 15px; margin: 20px 0; }}
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <h1>📊 有效因子分析报告</h1>
+                    
+                    <div class="info-box">
+                        <h3>📋 分析概览</h3>
+                        <p><strong>数据表:</strong> {table_name}</p>
+                        <p><strong>分析期间:</strong> {start_date} 至 {end_date}</p>
+                        <p><strong>分析时间:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+                        <p><strong>有效因子数量:</strong> {len(effective_factors)}</p>
+                    </div>
+                    
+                    <h2>📈 有效因子排名</h2>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>排名</th>
+                                <th>因子名称</th>
+                                <th>IC均值</th>
+                                <th>IC标准差</th>
+                                <th>IC信息比率</th>
+                                <th>分层收益差</th>
+                                <th>数据点数</th>
+                                <th>评级</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+            """
+            
+            # 添加有效因子排名表格
+            for i, factor_name in enumerate(effective_factors, 1):
+                if factor_name in all_results and 'error' not in all_results[factor_name]:
+                    result = all_results[factor_name]
+                    ic_ir = result.get('ic_ir', 0)
+                    
+                    # 评级
+                    if ic_ir > 0.2:
+                        rating = "优秀"
+                        rating_class = "positive"
+                    elif ic_ir > 0.1:
+                        rating = "良好"
+                        rating_class = "positive"
+                    elif ic_ir > 0.05:
+                        rating = "一般"
+                        rating_class = "neutral"
+                    else:
+                        rating = "较差"
+                        rating_class = "negative"
+                    
+                    html_content += f"""
+                            <tr>
+                                <td>{i}</td>
+                                <td><strong>{factor_name}</strong></td>
+                                <td class="{'positive' if result.get('ic_mean', 0) > 0 else 'negative' if result.get('ic_mean', 0) < 0 else 'neutral'}">{result.get('ic_mean', 0):.4f}</td>
+                                <td>{result.get('ic_std', 0):.4f}</td>
+                                <td class="{'positive' if ic_ir > 0 else 'negative' if ic_ir < 0 else 'neutral'}">{ic_ir:.4f}</td>
+                                <td class="{'positive' if result.get('spread', 0) > 0 else 'negative' if result.get('spread', 0) < 0 else 'neutral'}">{result.get('spread', 0):.4f}</td>
+                                <td>{result.get('data_points', 0):,}</td>
+                                <td class="{rating_class}">{rating}</td>
+                            </tr>
+                    """
+            
+            html_content += """
+                        </tbody>
+                    </table>
+                    
+                    <h2>📊 有效因子详细分析</h2>
+            """
+            
+            # 为每个有效因子创建详细分析部分
+            for factor_name in effective_factors:
+                if factor_name in all_results and 'error' not in all_results[factor_name]:
+                    result = all_results[factor_name]
+                    
+                    html_content += f"""
+                    <div class="factor-section">
+                        <div class="factor-header">
+                            <h3>📈 {factor_name}</h3>
+                        </div>
+                        
+                        <div class="stats-grid">
+                            <div class="stat-card">
+                                <div class="stat-value">{result.get('ic_mean', 0):.4f}</div>
+                                <div class="stat-label">IC均值</div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-value">{result.get('ic_std', 0):.4f}</div>
+                                <div class="stat-label">IC标准差</div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-value">{result.get('ic_ir', 0):.4f}</div>
+                                <div class="stat-label">IC信息比率</div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-value">{result.get('data_points', 0):,}</div>
+                                <div class="stat-label">数据点数</div>
+                            </div>
+                        </div>
+                        
+                        <h4>📊 分层收益分析</h4>
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>指标</th>
+                                    <th>数值</th>
+                                    <th>说明</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td>最高分位数收益</td>
+                                    <td class="{'positive' if result.get('top_quantile_returns', 0) > 0 else 'negative' if result.get('top_quantile_returns', 0) < 0 else 'neutral'}">{result.get('top_quantile_returns', 0):.4f}</td>
+                                    <td>因子值最高分位数的平均收益</td>
+                                </tr>
+                                <tr>
+                                    <td>最低分位数收益</td>
+                                    <td class="{'positive' if result.get('bottom_quantile_returns', 0) > 0 else 'negative' if result.get('bottom_quantile_returns', 0) < 0 else 'neutral'}">{result.get('bottom_quantile_returns', 0):.4f}</td>
+                                    <td>因子值最低分位数的平均收益</td>
+                                </tr>
+                                <tr>
+                                    <td>分层收益差</td>
+                                    <td class="{'positive' if result.get('spread', 0) > 0 else 'negative' if result.get('spread', 0) < 0 else 'neutral'}">{result.get('spread', 0):.4f}</td>
+                                    <td>最高分位数收益 - 最低分位数收益</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    """
+            
+            html_content += f"""
+                    <div class="info-box">
+                        <h4>📝 报告说明</h4>
+                        <p>本报告基于alphalens框架生成，包含所有有效因子的完整分析结果。</p>
+                        <p><strong>有效因子标准:</strong> IC信息比率 > 0.05</p>
+                        <p><strong>评级标准:</strong></p>
+                        <ul>
+                            <li>优秀: IC信息比率 > 0.2</li>
+                            <li>良好: 0.1 < IC信息比率 ≤ 0.2</li>
+                            <li>一般: 0.05 < IC信息比率 ≤ 0.1</li>
+                            <li>较差: IC信息比率 ≤ 0.05</li>
+                        </ul>
+                    </div>
+                </div>
+            </body>
+            </html>
+            """
+            
+            # 保存HTML文件
+            with open(html_path, 'w', encoding='utf-8') as f:
+                f.write(html_content)
+            
+            logger.info(f"创建整合HTML分析报告: {html_path}")
+            return html_path
+            
+        except Exception as e:
+            logger.error(f"创建整合HTML报告失败: {str(e)}")
+            return None
+
     def save_analysis_summary(self, summary_df: pd.DataFrame, table_name: str, 
                             start_date: str, end_date: str):
         """保存分析汇总结果"""
@@ -717,41 +975,6 @@ class SingleFactorAnalyzer:
         except Exception as e:
             logger.error(f"保存分析汇总结果失败: {str(e)}")
     
-    def generate_analysis_report(self, results: Dict[str, Any], output_file: str = None):
-        """生成分析报告"""
-        if not results['summary'].empty:
-            summary_df = results['summary']
-            
-            # 创建报告
-            report = f"""
-# 单因子分析报告
-
-## 分析概览
-- 总因子数: {results['total_factors']}
-- 成功分析: {results['analyzed_factors']}
-- 分析失败: {results['failed_factors']}
-
-## 因子排名（按IC信息比率）
-
-| 排名 | 因子名称 | IC均值 | IC标准差 | IC信息比率 | 分层收益差 |
-|------|----------|--------|----------|------------|------------|
-"""
-            
-            for i, (_, row) in enumerate(summary_df.head(10).iterrows(), 1):
-                report += f"| {i} | {row['factor_name']} | {row['ic_mean']:.4f} | {row['ic_std']:.4f} | {row['ic_ir']:.4f} | {row['spread']:.4f} |\n"
-            
-            # 保存报告
-            if output_file is None:
-                output_file = f"factor_analysis_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
-            
-            with open(output_file, 'w', encoding='utf-8') as f:
-                f.write(report)
-            
-            logger.info(f"分析报告已保存到: {output_file}")
-            return report
-        else:
-            logger.warning("没有分析结果可生成报告")
-            return None
     
     def close(self):
         """关闭数据库连接"""
@@ -794,18 +1017,20 @@ def main():
             output_dir=args.output_dir
         )
         
-        # 生成报告
-        report = analyzer.generate_analysis_report(results, args.output_file)
-        
         print(f"\n📊 单因子分析完成:")
         print(f"  总因子数: {results['total_factors']}")
         print(f"  成功分析: {results['analyzed_factors']}")
         print(f"  分析失败: {results['failed_factors']}")
+        print(f"  有效因子数: {len(results.get('effective_factors', []))}")
         
         if not results['summary'].empty:
             print(f"\n🏆 IC信息比率排名前5:")
             for i, (_, row) in enumerate(results['summary'].head(5).iterrows(), 1):
                 print(f"  {i}. {row['factor_name']}: {row['ic_ir']:.4f}")
+        
+        if results.get('effective_factors'):
+            print(f"\n✅ 有效因子: {', '.join(results['effective_factors'])}")
+            print(f"📄 整合HTML报告已生成")
         
     except Exception as e:
         print(f"❌ 单因子分析失败: {str(e)}")

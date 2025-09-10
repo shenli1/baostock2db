@@ -184,8 +184,7 @@ class MultiFactorPipeline:
                 output_dir=output_dir
             )
             
-            # 生成分析报告
-            report = self.single_factor_analyzer.generate_analysis_report(results)
+            # 不再生成MD报告，HTML报告已自动生成
             
             self.logger.info("单因子分析完成")
             return results
